@@ -2,7 +2,7 @@
 Open Asset Import Library (assimp)
 ----------------------------------------------------------------------
 
-Copyright (c) 2006-2021, assimp team
+Copyright (c) 2006-2022, assimp team
 
 All rights reserved.
 
@@ -159,7 +159,6 @@ bool parseColor(const char *color, aiColor4D &diffuse) {
         return false;
     }
 
-    //const char *buf(color);
     if ('#' != color[0]) {
         return false;
     }

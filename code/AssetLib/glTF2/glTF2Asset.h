@@ -2,7 +2,7 @@
 Open Asset Import Library (assimp)
 ----------------------------------------------------------------------
 
-Copyright (c) 2006-2021, assimp team
+Copyright (c) 2006-2022, assimp team
 
 All rights reserved.
 
@@ -49,6 +49,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *   KHR_materials_sheen full
  *   KHR_materials_clearcoat full
  *   KHR_materials_transmission full
+ *   KHR_materials_volume full
+ *   KHR_materials_ior full
  */
 #ifndef GLTF2ASSET_H_INC
 #define GLTF2ASSET_H_INC
@@ -74,6 +76,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <rapidjson/document.h>
 #include <rapidjson/error/en.h>
 #include <rapidjson/rapidjson.h>
+#include <rapidjson/schema.h>
 
 #if (__GNUC__ == 8 && __GNUC_MINOR__ >= 0)
 #   pragma GCC diagnostic pop
@@ -103,13 +106,15 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #       define gltf_unordered_map tr1::unordered_map
 #       define gltf_unordered_set tr1::unordered_set
 #   else
-#      define gltf_unordered_map unordered_map
+#       define gltf_unordered_map unordered_map
 #       define gltf_unordered_set unordered_set
 #   endif
 #endif
 // clang-format on
 
 #include <assimp/StringUtils.h>
+#include <assimp/material.h>
+#include <assimp/GltfMaterial.h>
 
 #include "AssetLib/glTF/glTFCommon.h"
 
@@ -137,7 +142,6 @@ using glTFCommon::vec4;
 
 //! Magic number for GLB files
 #define AI_GLB_MAGIC_NUMBER "glTF"
-#include <assimp/pbrmaterial.h>
 
 #ifdef ASSIMP_API
 #include <assimp/Compiler/pushpack1.h>
@@ -713,6 +717,7 @@ const vec3 defaultEmissiveFactor = { 0, 0, 0 };
 const vec4 defaultDiffuseFactor = { 1, 1, 1, 1 };
 const vec3 defaultSpecularFactor = { 1, 1, 1 };
 const vec3 defaultSheenFactor = { 0, 0, 0 };
+const vec3 defaultAttenuationColor = { 1, 1, 1 };
 
 struct TextureInfo {
     Ref<Texture> texture;
@@ -777,6 +782,23 @@ struct MaterialTransmission {
     float transmissionFactor = 0.f;
 };
 
+struct MaterialVolume {
+    float thicknessFactor = 0.f;
+    TextureInfo thicknessTexture;
+    float attenuationDistance = 0.f;
+    vec3 attenuationColor;
+
+    MaterialVolume() { SetDefaults(); }
+    void SetDefaults();
+};
+
+struct MaterialIOR {
+    float ior = 0.f;
+
+    MaterialIOR() { SetDefaults(); }
+    void SetDefaults();
+};
+
 //! The material appearance of a primitive.
 struct Material : public Object {
     //PBR metallic roughness properties
@@ -803,6 +825,12 @@ struct Material : public Object {
     //extension: KHR_materials_transmission
     Nullable<MaterialTransmission> materialTransmission;
 
+    //extension: KHR_materials_volume
+    Nullable<MaterialVolume> materialVolume;
+
+    //extension: KHR_materials_ior
+    Nullable<MaterialIOR> materialIOR;
+    
     //extension: KHR_materials_unlit
     bool unlit;
 
@@ -1059,27 +1087,10 @@ class Asset {
 
     template <class T>
     friend class LazyDict;
-
     friend struct Buffer; // To access OpenFile
-
     friend class AssetWriter;
 
-private:
-    IOSystem *mIOSystem;
-
-    std::string mCurrentAssetDir;
-
-    size_t mSceneLength;
-    size_t mBodyOffset, mBodyLength;
-
     std::vector<LazyDictBase *> mDicts;
-
-    IdMap mUsedIds;
-
-    Ref<Buffer> mBodyBuffer;
-
-    Asset(Asset &);
-    Asset &operator=(const Asset &);
 
 public:
     //! Keeps info about the enabled extensions
@@ -1091,19 +1102,41 @@ public:
         bool KHR_materials_sheen;
         bool KHR_materials_clearcoat;
         bool KHR_materials_transmission;
+        bool KHR_materials_volume;
+        bool KHR_materials_ior;
         bool KHR_draco_mesh_compression;
         bool FB_ngon_encoding;
         bool KHR_texture_basisu;
+
+        Extensions() :
+                KHR_materials_pbrSpecularGlossiness(false), 
+                KHR_materials_unlit(false), 
+                KHR_lights_punctual(false), 
+                KHR_texture_transform(false), 
+                KHR_materials_sheen(false), 
+                KHR_materials_clearcoat(false), 
+                KHR_materials_transmission(false), 
+                KHR_materials_volume(false),
+                KHR_materials_ior(false),
+                KHR_draco_mesh_compression(false),
+                FB_ngon_encoding(false),
+                KHR_texture_basisu(false) {
+            // empty
+        }
     } extensionsUsed;
 
     //! Keeps info about the required extensions
     struct RequiredExtensions {
         bool KHR_draco_mesh_compression;
         bool KHR_texture_basisu;
+
+        RequiredExtensions() : KHR_draco_mesh_compression(false), KHR_texture_basisu(false) {
+            // empty
+        }
     } extensionsRequired;
 
     AssetMetadata asset;
-    Value *extras = nullptr;
+    Value *extras;
 
     // Dictionaries for each type of object
 
@@ -1125,9 +1158,12 @@ public:
     Ref<Scene> scene;
 
 public:
-    Asset(IOSystem *io = nullptr) :
-            mIOSystem(io),
+    Asset(IOSystem *io = nullptr, rapidjson::IRemoteSchemaDocumentProvider *schemaDocumentProvider = nullptr) :
+            mDicts(),
+            extensionsUsed(),
+            extensionsRequired(),
             asset(),
+            extras(nullptr),
             accessors(*this, "accessors"),
             animations(*this, "animations"),
             buffers(*this, "buffers"),
@@ -1141,13 +1177,17 @@ public:
             samplers(*this, "samplers"),
             scenes(*this, "scenes"),
             skins(*this, "skins"),
-            textures(*this, "textures") {
-        memset(&extensionsUsed, 0, sizeof(extensionsUsed));
-        memset(&extensionsRequired, 0, sizeof(extensionsRequired));
+            textures(*this, "textures") ,
+            mIOSystem(io),
+            mSchemaDocumentProvider(schemaDocumentProvider) {
+        // empty
     }
 
     //! Main function
     void Load(const std::string &file, bool isBinary = false);
+
+    //! Parse the AssetMetadata and check that the version is 2.
+    bool CanRead(const std::string &pFile, bool isBinary = false);
 
     //! Enables binary encoding on the asset
     void SetAsBinary();
@@ -1157,13 +1197,31 @@ public:
 
     Ref<Buffer> GetBodyBuffer() { return mBodyBuffer; }
 
+    Asset(Asset &) = delete;
+    Asset &operator=(const Asset &) = delete;
+
 private:
     void ReadBinaryHeader(IOStream &stream, std::vector<char> &sceneData);
+
+    /// Obtain a JSON document from the stream.
+    /// \param second argument is a buffer used by the document. It must be kept
+    /// alive while the document is in use.
+    Document ReadDocument(IOStream& stream, bool isBinary, std::vector<char>& sceneData);
 
     void ReadExtensionsUsed(Document &doc);
     void ReadExtensionsRequired(Document &doc);
 
     IOStream *OpenFile(const std::string &path, const char *mode, bool absolute = false);
+
+private:
+    IOSystem *mIOSystem;
+    rapidjson::IRemoteSchemaDocumentProvider *mSchemaDocumentProvider;
+    std::string mCurrentAssetDir;
+    size_t mSceneLength;
+    size_t mBodyOffset;
+    size_t mBodyLength;
+    IdMap mUsedIds;
+    Ref<Buffer> mBodyBuffer;
 };
 
 inline std::string getContextForErrorMessages(const std::string &id, const std::string &name) {

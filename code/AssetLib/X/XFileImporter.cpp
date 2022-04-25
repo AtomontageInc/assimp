@@ -3,7 +3,7 @@
 Open Asset Import Library (assimp)
 ---------------------------------------------------------------------------
 
-Copyright (c) 2006-2021, assimp team
+Copyright (c) 2006-2022, assimp team
 
 All rights reserved.
 
@@ -88,17 +88,9 @@ XFileImporter::~XFileImporter() {
 
 // ------------------------------------------------------------------------------------------------
 // Returns whether the class can handle the format of the given file.
-bool XFileImporter::CanRead( const std::string& pFile, IOSystem* pIOHandler, bool checkSig) const {
-    std::string extension = GetExtension(pFile);
-    if(extension == "x") {
-        return true;
-    }
-    if (!extension.length() || checkSig) {
-        uint32_t token[1];
-        token[0] = AI_MAKE_MAGIC("xof ");
-        return CheckMagicToken(pIOHandler,pFile,token,1,0);
-    }
-    return false;
+bool XFileImporter::CanRead( const std::string& pFile, IOSystem* pIOHandler, bool /*checkSig*/) const {
+    static const uint32_t token[] = { AI_MAKE_MAGIC("xof ") };
+    return CheckMagicToken(pIOHandler,pFile,token,AI_COUNT_OF(token));
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -219,7 +211,7 @@ aiNode* XFileImporter::CreateNodes( aiScene* pScene, aiNode* pParent, const XFil
     // convert meshes from the source node
     CreateMeshes( pScene, node, pNode->mMeshes);
 
-    // handle childs
+    // handle children
     if( !pNode->mChildren.empty() ) {
         node->mNumChildren = (unsigned int)pNode->mChildren.size();
         node->mChildren = new aiNode* [node->mNumChildren];
